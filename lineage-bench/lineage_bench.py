@@ -5,9 +5,11 @@ import random
 import sys
 import csv
 import os
+import time
 import requests
-from datetime import datetime
+from datetime import datetime, UTC
 from enum import Enum
+from typing import Optional, Tuple
 
 # Default prompt template for the quiz.
 DEFAULT_PROMPT = """Given the following lineage relationships:
@@ -157,20 +159,44 @@ def generate_quizzes(length, num_quizzes=10, prompt=DEFAULT_PROMPT, shuffle=Fals
             if quiz is not None and correct_answer is not None:  # Explicit None check
                 yield (str(quiz_type).removeprefix("QuizType."), correct_answer, quiz)
 
-def get_online_time():
-    """Get current time from an online time server."""
-    try:
-        response = requests.get('http://worldtimeapi.org/api/timezone/UTC')
-        if response.status_code == 200:
-            time_data = response.json()
-            dt = datetime.fromisoformat(time_data['datetime'].replace('Z', '+00:00'))
+def try_get_time_from_source(url: str, max_retries: int = 3) -> Optional[datetime]:
+    """Try to get time from a specific source with retries."""
+    for attempt in range(max_retries):
+        try:
+            response = requests.get(url, timeout=5)
+            if response.status_code == 200:
+                if 'worldtimeapi.org' in url:
+                    time_data = response.json()
+                    return datetime.fromisoformat(time_data['datetime'].replace('Z', '+00:00'))
+                elif 'timeapi.io' in url:
+                    time_data = response.json()
+                    return datetime.fromisoformat(time_data['dateTime'])
+                elif 'timeapi.org' in url:
+                    return datetime.fromisoformat(response.text.strip())
+            if attempt < max_retries - 1:
+                time.sleep(1)  # Wait before retry
+        except Exception as e:
+            if attempt < max_retries - 1:
+                print(f"Attempt {attempt + 1} failed for {url}: {e}", file=sys.stderr)
+                time.sleep(1)
+    return None
+
+def get_online_time() -> datetime:
+    """Get current time from multiple online time servers with fallback."""
+    time_sources = [
+        'http://worldtimeapi.org/api/timezone/UTC',
+        'https://timeapi.io/api/Time/current/zone?timeZone=UTC',
+        'https://timeapi.org/utc/now'
+    ]
+    
+    for source in time_sources:
+        dt = try_get_time_from_source(source)
+        if dt:
             return dt
-        else:
-            print("Warning: Could not get online time, using local time", file=sys.stderr)
-            return datetime.utcnow()
-    except Exception as e:
-        print(f"Warning: Error getting online time ({e}), using local time", file=sys.stderr)
-        return datetime.utcnow()
+        print(f"Warning: Could not get time from {source}", file=sys.stderr)
+    
+    print("Warning: All online time sources failed, using local time", file=sys.stderr)
+    return datetime.now(UTC)
 
 # Main execution block when the script is run directly.
 if __name__ == '__main__':
@@ -194,7 +220,7 @@ if __name__ == '__main__':
     # Get timestamp from online source
     current_time = get_online_time()
     timestamp = current_time.strftime('%Y%m%d_%H%M')
-    output_file = os.path.join(tests_dir, f'lineage_bench_{timestamp}.csv')
+    output_file = os.path.join(tests_dir, f'{args.length}_{timestamp}.csv')
 
     # Create a CSV writer to output the generated quizzes
     with open(output_file, 'w', newline='') as f:

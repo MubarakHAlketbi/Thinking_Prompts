@@ -7,6 +7,47 @@ import pandas as pd
 import argparse
 from collections import defaultdict
 import csv
+import time
+from pathlib import Path
+from typing import List, Tuple
+
+def get_result_files() -> List[Tuple[Path, float]]:
+    """Get list of CSV files from results directory and subdirectories sorted by modification time."""
+    results_dir = Path(os.path.dirname(os.path.abspath(__file__))) / 'results'
+    if not results_dir.exists():
+        print(f"Error: Results directory not found at {results_dir}", file=sys.stderr)
+        sys.exit(1)
+        
+    # Recursively find all CSV files in results directory and subdirectories
+    files = []
+    for root, _, filenames in os.walk(results_dir):
+        for filename in filenames:
+            if filename.endswith('.csv'):
+                file_path = Path(root) / filename
+                files.append((file_path, file_path.stat().st_mtime))
+    
+    return sorted(files, key=lambda x: x[1], reverse=True)
+
+def select_result_file() -> Path:
+    """Display last 3 result files and let user select one."""
+    files = get_result_files()
+    if not files:
+        print("Error: No CSV files found in results directory", file=sys.stderr)
+        sys.exit(1)
+        
+    print("\nAvailable result files (last 3):", file=sys.stderr)
+    for i, (file, mtime) in enumerate(files[:3], 1):
+        print(f"{i}. {file.relative_to(file.parent.parent.parent)} (modified: {time.ctime(mtime)})", file=sys.stderr)
+        
+    while True:
+        try:
+            choice = input("\nSelect a file (1-3): ")
+            idx = int(choice) - 1
+            if 0 <= idx < min(3, len(files)):
+                return files[idx][0]
+            print("Invalid choice. Please select a number between 1 and 3", file=sys.stderr)
+        except ValueError:
+            print("Invalid input. Please enter a number", file=sys.stderr)
 
 def extract_answer(row, relaxed):
     # Extract the answer from the model's response.
@@ -46,8 +87,22 @@ gen_csv = args.csv
 is_output_detailed = args.detailed
 is_answer_relaxed = args.relaxed
 
-# Read the CSV data from standard input.
-df = pd.read_csv(sys.stdin, names=['problem_size', 'relation_name', 'correct_answer', 'quiz', 'model_name', 'provider_name', 'reasoning_effort', 'system_prompt', 'model_response'], dtype={'problem_size': 'int32', 'relation_name': 'object', 'correct_answer': 'int32', 'quiz': 'object', 'model_name': 'object', 'provider_name': 'object', 'reasoning_effort': 'object', 'system_prompt': 'object', 'model_response': 'object'})
+# Let user select result file
+result_file = select_result_file()
+print(f"\nUsing result file: {result_file}", file=sys.stderr)
+
+# Create data directory with same structure as results
+data_dir = Path(os.path.dirname(os.path.abspath(__file__))) / 'data'
+relative_path = result_file.relative_to(result_file.parent.parent.parent)
+output_dir = data_dir / relative_path.parent
+os.makedirs(output_dir, exist_ok=True)
+
+# Prepare output file name
+output_file = output_dir / f"metrics_{result_file.name}"
+print(f"Output will be saved to: {output_file}", file=sys.stderr)
+
+# Read the CSV data from selected file
+df = pd.read_csv(result_file, names=['problem_size', 'relation_name', 'correct_answer', 'quiz', 'model_name', 'provider_name', 'reasoning_effort', 'system_prompt', 'model_response'], dtype={'problem_size': 'int32', 'relation_name': 'object', 'correct_answer': 'int32', 'quiz': 'object', 'model_name': 'object', 'provider_name': 'object', 'reasoning_effort': 'object', 'system_prompt': 'object', 'model_response': 'object'})
 
 # Extract the model's answer and determine if it's correct or missing.
 df['model_answer'] = df.apply(extract_answer, axis=1, args=(is_answer_relaxed,))
@@ -76,14 +131,21 @@ else:
     df = df[['problem_size', 'model_name', 'lineage']]
     df = df.pivot(index=['model_name'], columns='problem_size', values='lineage').fillna(0).reset_index()
 
-    problem_sizes = [8, 16, 32, 64]
+    # Get available problem sizes from the data
+    problem_sizes = sorted(df.columns.drop('model_name').astype(int).tolist())
+    if not problem_sizes:
+        print("Error: No valid problem sizes found in data", file=sys.stderr)
+        sys.exit(1)
 
-    # Calculate the overall lineage score across problem sizes.
+    # Calculate the overall lineage score across available sizes
     df['lineage'] = df[problem_sizes].mean(axis=1)
 
-    # Rename columns to include problem size in the name.
+    # Rename columns to include problem size in the name
     df = df[['model_name', 'lineage'] + problem_sizes]
-    df = df.rename(columns={ size: f'lineage-{size}' for size in problem_sizes })
+    df = df.rename(columns={size: f'lineage-{size}' for size in problem_sizes})
+
+    if len(problem_sizes) == 1:
+        print(f"\nProcessing single problem size: {problem_sizes[0]}", file=sys.stderr)
 
     # Sort by lineage score and calculate rank.
     df = df.sort_values(['lineage'], ascending=False)
@@ -92,8 +154,14 @@ else:
     # Select final columns for output.
     df = df[['Nr', 'model_name', 'lineage'] + [f'lineage-{size}' for size in problem_sizes]]
 
-# Print the output in the specified format (CSV or Markdown).
-if gen_csv:
-    print(df.to_csv(index=False))
-else:
-    print(df.to_markdown(floatfmt=".3f", index=False))
+# Generate output in the specified format
+output_data = df.to_csv(index=False) if gen_csv else df.to_markdown(floatfmt=".3f", index=False)
+
+# Write to file
+with open(output_file, 'w', encoding='utf-8') as f:
+    f.write(output_data)
+
+# Also print to stdout for piping
+print(output_data)
+
+print(f"\nMetrics saved to: {output_file}", file=sys.stderr)

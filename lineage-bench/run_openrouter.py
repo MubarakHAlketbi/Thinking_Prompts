@@ -11,9 +11,65 @@ import requests
 from concurrent.futures import ThreadPoolExecutor
 from dotenv import load_dotenv
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 
 load_dotenv()
+
+def get_env_defaults() -> dict:
+    """Get default values from environment variables."""
+    return {
+        'model': os.getenv('OPENROUTER_MODEL', 'openrouter/auto'),
+        'provider': os.getenv('OPENROUTER_PROVIDER'),
+        'effort': os.getenv('OPENROUTER_EFFORT'),
+        'threads': int(os.getenv('OPENROUTER_THREADS', '8')),
+        'system_prompt': os.getenv('OPENROUTER_SYSTEM_PROMPT'),
+        'system_prompt_file': os.getenv('OPENROUTER_SYSTEM_PROMPT_FILE'),
+        'referer': os.getenv('OPENROUTER_REFERER'),
+        'title': os.getenv('OPENROUTER_TITLE'),
+        'fallbacks': os.getenv('OPENROUTER_FALLBACKS', 'true').lower() == 'true',
+        'data_privacy': os.getenv('OPENROUTER_DATA_PRIVACY'),
+        'require_params': os.getenv('OPENROUTER_REQUIRE_PARAMS', 'false').lower() == 'true',
+        'quantization': os.getenv('OPENROUTER_QUANTIZATION'),
+        'ignore_providers': os.getenv('OPENROUTER_IGNORE_PROVIDERS'),
+        'fallback_models': os.getenv('OPENROUTER_FALLBACK_MODELS')
+    }
+
+def parse_model_name(model: str) -> str:
+    """Parse model name to remove provider prefix and version suffix."""
+    # Remove provider prefix (before /)
+    if '/' in model:
+        model = model.split('/')[-1]
+    # Remove version suffix (after :)
+    if ':' in model:
+        model = model.split(':')[0]
+    return model
+
+def get_prompt_folder_name(prompt_path: Optional[str]) -> str:
+    """Get folder name from prompt file path or return 'custom'."""
+    if not prompt_path or not os.path.isfile(prompt_path):
+        return 'custom'
+    
+    # Get the file name without extension
+    folder_name = os.path.splitext(os.path.basename(prompt_path))[0]
+    return folder_name
+
+def extract_size_from_filename(filename: str) -> str:
+    """Extract size number from test file name.
+    
+    Test files are named: {length}_{date}_{time}.csv
+    Example: 8_20250221_0401.csv -> returns "8"
+    """
+    try:
+        # Get just the filename without path
+        base_name = os.path.basename(filename)
+        # Split on underscore and take first part (the length)
+        size = base_name.split('_')[0]
+        # Verify it's a number
+        int(size)  # This will raise ValueError if not a number
+        return size
+    except (IndexError, ValueError) as e:
+        print(f"Error extracting size from filename {filename}: {e}", file=sys.stderr)
+        return "unknown"
 
 def get_test_files() -> List[Tuple[Path, float]]:
     """Get list of CSV files from tests directory sorted by modification time."""
@@ -47,38 +103,107 @@ def select_test_file() -> Path:
             print("Invalid input. Please enter a number", file=sys.stderr)
 
 
-def get_system_prompt(prompt_arg):
-    # Reads system prompt from a file or returns the argument itself
-    if os.path.isfile(prompt_arg) and (prompt_arg.endswith(".txt") or prompt_arg.endswith(".md")):
-        with open(prompt_arg, 'r') as f:
-            return f.read()
+def get_system_prompt(prompt_arg: str) -> str:
+    """
+    Get system prompt from various sources:
+    1. Direct text input
+    2. File path (.txt or .md)
+    3. Default prompt if none provided
+    """
+    DEFAULT_SYSTEM_PROMPT = """You are a master of logical thinking. You carefully analyze the premises step by step, take detailed notes and draw intermediate conclusions based on which you can find the final answer to any question."""
+    
+    if not prompt_arg:
+        return DEFAULT_SYSTEM_PROMPT
+        
+    # Check if it's a file path
+    if isinstance(prompt_arg, str) and os.path.isfile(prompt_arg):
+        if prompt_arg.endswith(('.txt', '.md')):
+            try:
+                with open(prompt_arg, 'r', encoding='utf-8') as f:
+                    content = f.read().strip()
+                    if content:  # Check if file is not empty
+                        return content
+                    print(f"Warning: Empty prompt file: {prompt_arg}", file=sys.stderr)
+                    return DEFAULT_SYSTEM_PROMPT
+            except Exception as e:
+                print(f"Warning: Error reading prompt file {prompt_arg}: {e}", file=sys.stderr)
+                return DEFAULT_SYSTEM_PROMPT
+        else:
+            print(f"Warning: Unsupported file type for prompt: {prompt_arg}", file=sys.stderr)
+            return DEFAULT_SYSTEM_PROMPT
+            
+    # If not a file or file reading failed, return the argument itself
     return prompt_arg
 
-DEFAULT_SYSTEM_PROMPT="You are a master of logical thinking. You carefully analyze the premises step by step, take detailed notes and draw intermediate conclusions based on which you can find the final answer to any question."
+# Get defaults from environment
+env_defaults = get_env_defaults()
 
 # Set up the argument parser for command-line options.
-parser = argparse.ArgumentParser()
-parser.add_argument("-m", "--model", help="OpenRouter model name.", required=True)
-parser.add_argument("-p", "--provider", help="OpenRouter provider name.")
-parser.add_argument("-e", "--effort", help="Reasoning effort (o1 model only).")
-parser.add_argument("-t", "--threads", help="Number of threads to use.", type=int, default=8)
-parser.add_argument("-v", "--verbose", help="Enable verbose output.", action="store_true")
-parser.add_argument("-s", "--system-prompt", help="Use given system prompt. By default, the system prompt is not used. When this option is passed without a value, the default system prompt value is used: " + repr(DEFAULT_SYSTEM_PROMPT), const=DEFAULT_SYSTEM_PROMPT, default=None, nargs='?')
-parser.add_argument("--referer", help="Site URL for rankings on openrouter.ai.")
-parser.add_argument("--title", help="Site title for rankings on openrouter.ai.")
-parser.add_argument("-f", "--fallbacks", help="Allow fallbacks to other providers. Defaults to True.", type=lambda x: (str(x).lower() == 'true'), default=True)
-parser.add_argument("--data-privacy", help="Set data collection preference ('allow' or 'deny').", choices=['allow', 'deny'])
-parser.add_argument("--require-params", help="Only use providers that support all parameters.", action="store_true")
-parser.add_argument("--quantization", help="Filter providers by quantization level.", choices=['int4', 'int8', 'fp6', 'fp8', 'fp16', 'bf16', 'fp32'])
-parser.add_argument("--ignore-providers", help="Comma-separated list of providers to ignore.")
-parser.add_argument("--fallback-models", help="Comma-separated list of fallback models to try if primary model fails.")
+parser = argparse.ArgumentParser(
+    description="Test LLM models using the OpenRouter API. Defaults can be set in .env file."
+)
+parser.add_argument("-m", "--model",
+                   help=f"OpenRouter model name. Default: {env_defaults['model']}",
+                   default=env_defaults['model'])
+parser.add_argument("-p", "--provider",
+                   help="OpenRouter provider name.",
+                   default=env_defaults['provider'])
+parser.add_argument("-e", "--effort",
+                   help="Reasoning effort (o1 model only).",
+                   default=env_defaults['effort'])
+parser.add_argument("-t", "--threads",
+                   help="Number of threads to use.",
+                   type=int,
+                   default=env_defaults['threads'])
+parser.add_argument("-v", "--verbose",
+                   help="Enable verbose output.",
+                   action="store_true")
+parser.add_argument("-s", "--system-prompt",
+                   help="System prompt text or file path (.txt/.md). Can also be set via OPENROUTER_SYSTEM_PROMPT or OPENROUTER_SYSTEM_PROMPT_FILE in .env",
+                   default=env_defaults['system_prompt'] or env_defaults['system_prompt_file'])
+parser.add_argument("--referer",
+                   help="Site URL for rankings on openrouter.ai.",
+                   default=env_defaults['referer'])
+parser.add_argument("--title",
+                   help="Site title for rankings on openrouter.ai.",
+                   default=env_defaults['title'])
+parser.add_argument("-f", "--fallbacks",
+                   help="Allow fallbacks to other providers.",
+                   type=lambda x: (str(x).lower() == 'true'),
+                   default=env_defaults['fallbacks'])
+parser.add_argument("--data-privacy",
+                   help="Set data collection preference ('allow' or 'deny').",
+                   choices=['allow', 'deny'],
+                   default=env_defaults['data_privacy'])
+parser.add_argument("--require-params",
+                   help="Only use providers that support all parameters.",
+                   action="store_true",
+                   default=env_defaults['require_params'])
+parser.add_argument("--quantization",
+                   help="Filter providers by quantization level.",
+                   choices=['int4', 'int8', 'fp6', 'fp8', 'fp16', 'bf16', 'fp32'],
+                   default=env_defaults['quantization'])
+parser.add_argument("--ignore-providers",
+                   help="Comma-separated list of providers to ignore.",
+                   default=env_defaults['ignore_providers'])
+parser.add_argument("--fallback-models",
+                   help="Comma-separated list of fallback models to try if primary model fails.",
+                   default=env_defaults['fallback_models'])
 
 args = parser.parse_args()
 
+# Print configuration if verbose
+if args.verbose:
+    print("\nConfiguration:", file=sys.stderr)
+    for arg, value in vars(args).items():
+        if value is not None:
+            print(f"{arg}: {value}", file=sys.stderr)
+    print("", file=sys.stderr)
+
 # Assign arguments to variables
 model_name = args.model if args.model else "openrouter/auto"
-provider_name = args.provider.split(',') if args.provider else None
-system_prompt = get_system_prompt(args.system_prompt) if args.system_prompt else args.system_prompt
+provider_name = args.provider  # Keep as string, split when needed
+system_prompt = get_system_prompt(args.system_prompt)  # Always get a system prompt (default if none provided)
 reasoning_effort = args.effort
 num_threads = args.threads
 is_verbose = args.verbose
@@ -91,19 +216,27 @@ quantization = [args.quantization] if args.quantization else None
 ignore_providers = args.ignore_providers.split(',') if args.ignore_providers else None
 fallback_models = args.fallback_models.split(',') if args.fallback_models else None
 
+if is_verbose:
+    print(f"\nUsing system prompt:\n{system_prompt}\n", file=sys.stderr)
+
 # Get API key from environment
 api_key = os.getenv("OPENROUTER_API_KEY")
 if not api_key:
     print("Error: OPENROUTER_API_KEY environment variable not set", file=sys.stderr)
     sys.exit(1)
 
-# Let user select test file and prepare CSV reader/writer
+# Let user select test file and prepare CSV reader
 test_file = select_test_file()
 print(f"\nUsing test file: {test_file}", file=sys.stderr)
 
-quiz_reader = csv.reader(open(test_file, 'r', encoding='utf-8'), delimiter=',', quotechar='"')
-csv_writer = csv.writer(sys.stdout)
+# Read all quizzes first to get total count
+print("Reading test file...", file=sys.stderr)
+with open(test_file, 'r', encoding='utf-8') as f:
+    quiz_count = sum(1 for _ in csv.reader(f))
+print(f"Found {quiz_count} quizzes to process", file=sys.stderr)
 
+print(f"\nStarting processing with {num_threads} threads...", file=sys.stderr)
+quiz_reader = csv.reader(open(test_file, 'r', encoding='utf-8'), delimiter=',', quotechar='"')
 
 def make_request(row):
     # Makes a request to the OpenRouter API with retries and error handling.
@@ -135,10 +268,10 @@ def make_request(row):
     problem_size, relation_name, correct_answer, quiz = row
 
     # Construct the messages for the API request.
-    system_messages=[{"role": "system", "content": system_prompt }]
-    messages=[{"role": "user", "content": quiz }]
-    if system_prompt is not None:
-        messages = system_messages + messages
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": quiz}
+    ]
 
     # Prepare the request data.
     request_data = {
@@ -156,7 +289,8 @@ def make_request(row):
     provider_options = {}
     
     if provider_name:
-        provider_options["order"] = provider_name
+        # Split provider names into array and remove any empty strings
+        provider_options["order"] = [p.strip() for p in provider_name.split(',') if p.strip()]
     if allow_fallbacks is not None:
         provider_options["allow_fallbacks"] = allow_fallbacks
     if data_privacy:
@@ -264,24 +398,50 @@ def make_request(row):
     # Return the results.
     return [problem_size, relation_name, correct_answer, quiz, model_name, provider_name, reasoning_effort, system_prompt, model_response]
 
-# Create results directory if it doesn't exist
-results_dir = Path(os.path.dirname(os.path.abspath(__file__))) / 'results'
+# Get base results directory and create prompt-specific subdirectory
+base_results_dir = Path(os.path.dirname(os.path.abspath(__file__))) / 'results'
+prompt_dir = get_prompt_folder_name(args.system_prompt)
+results_dir = base_results_dir / prompt_dir
 os.makedirs(results_dir, exist_ok=True)
 
-# Prepare output file with same name as input file
-output_file = results_dir / test_file.name
+# Parse model name and get size from test file
+clean_model_name = parse_model_name(model_name)
+size = extract_size_from_filename(test_file)  # Pass full Path object
+
+# Create output file name: {model_name}_{size}.csv
+output_file = results_dir / f"{clean_model_name}_{size}.csv"
+
+if is_verbose:
+    print(f"\nModel name: {clean_model_name}", file=sys.stderr)
+    print(f"Test size: {size}", file=sys.stderr)
+
+if is_verbose:
+    print(f"\nResults will be saved to: {output_file}", file=sys.stderr)
 
 # Use a ThreadPoolExecutor to process quizzes concurrently.
+print("Initializing threads...", file=sys.stderr)
 with ThreadPoolExecutor(max_workers=num_threads) as executor:
-    results = executor.map(make_request, quiz_reader)
+    # Submit all tasks and get futures
+    futures = list(map(lambda x: executor.submit(make_request, x), quiz_reader))
+    
+    # Wait for first thread to start processing
+    while not any(f.running() for f in futures):
+        time.sleep(0.1)
+    print(f"Threads active and processing...", file=sys.stderr)
+    
+    # Get results as they complete
+    results = [f.result() for f in futures]
 
-# Write results to both stdout and results file
+# Write results to file
 with open(output_file, 'w', newline='', encoding='utf-8') as f:
     file_writer = csv.writer(f)
-    # Convert results iterator to list to avoid consuming it
-    results_list = list(results)
-    # Write results to both writers
-    for result in results_list:
-        csv_writer.writerow(result)  # Write to stdout
-        file_writer.writerow(result) # Write to file
-    print(f"\nResults saved to: {output_file}", file=sys.stderr)
+    processed = 0
+    for result in results:
+        file_writer.writerow(result)
+        processed += 1
+        progress = (processed / quiz_count) * 100
+        print(f"Progress: {processed}/{quiz_count} quizzes ({progress:.1f}%)", file=sys.stderr, end='\r')
+    
+    print("", file=sys.stderr)  # Clear the progress line
+    print(f"\nCompleted processing {processed} quizzes", file=sys.stderr)
+    print(f"Results saved to: {output_file}", file=sys.stderr)

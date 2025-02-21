@@ -59,29 +59,60 @@ The project consists of the following Python scripts:
 3.  **`if __name__ == '__main__':`:**
     *   Parses command-line arguments.
     *   Calls `generate_quizzes` and writes the output to a CSV file in the 'tests' directory.
-    *   File name includes timestamp for tracking.
+    *   File name format: `{length}_{date}_{time}.csv` (e.g., `8_20250221_0401.csv`).
 
 ### 2. `run_openrouter.py`
 
 **Purpose:** Tests LLM models using the OpenRouter API.
 
-**Usage:**
+**Configuration:**
 
-```bash
-./run_openrouter.py -m MODEL [-p PROVIDER] [-e EFFORT] [-t THREADS] [-v] [-s [SYSTEM_PROMPT]] [--referer REFERER] [--title TITLE] [-f FALLBACKS] [--data-privacy DATA_PRIVACY] [--require-params] [--quantization LEVEL] [--ignore-providers PROVIDERS] [--fallback-models MODELS]
-```
+The script can be configured through both environment variables and command-line arguments. Command-line arguments take precedence over environment variables.
+
+1. **Environment Variables** (in .env file):
+   ```bash
+   # API Configuration
+   OPENROUTER_API_KEY=your_api_key_here
+   
+   # Model and Provider Settings
+   OPENROUTER_MODEL=openrouter/auto
+   OPENROUTER_PROVIDER=OpenAI,Anthropic
+   OPENROUTER_EFFORT=medium
+   OPENROUTER_THREADS=8
+   
+   # System Prompt (use either SYSTEM_PROMPT or SYSTEM_PROMPT_FILE)
+   OPENROUTER_SYSTEM_PROMPT="Your prompt here..."
+   OPENROUTER_SYSTEM_PROMPT_FILE=prompts/system_prompt.md
+   
+   # OpenRouter Rankings
+   OPENROUTER_REFERER=https://your-site.com
+   OPENROUTER_TITLE=Your Site Name
+   
+   # Provider Options
+   OPENROUTER_FALLBACKS=true
+   OPENROUTER_DATA_PRIVACY=deny
+   OPENROUTER_REQUIRE_PARAMS=false
+   OPENROUTER_QUANTIZATION=fp16
+   OPENROUTER_IGNORE_PROVIDERS=Azure,DeepInfra
+   OPENROUTER_FALLBACK_MODELS=anthropic/claude-3-sonnet,openai/gpt-3.5-turbo
+   ```
+
+2. **Command-Line Arguments:**
+   ```bash
+   ./run_openrouter.py [-m MODEL] [-p PROVIDER] [-e EFFORT] [-t THREADS] [-v] [-s SYSTEM_PROMPT] [--referer REFERER] [--title TITLE] [-f FALLBACKS] [--data-privacy DATA_PRIVACY] [--require-params] [--quantization LEVEL] [--ignore-providers PROVIDERS] [--fallback-models MODELS]
+   ```
 
 **Arguments:**
 
-*   `-m MODEL`, `--model MODEL`: OpenRouter model name (required). Defaults to `openrouter/auto` if not provided.
+*   `-m MODEL`, `--model MODEL`: OpenRouter model name. Defaults to value from OPENROUTER_MODEL or 'openrouter/auto'.
 *   `-p PROVIDER`, `--provider PROVIDER`: Comma separated OpenRouter provider name(s).
 *   `-e EFFORT`, `--effort EFFORT`: Reasoning effort (o1 model only).
-*   `-t THREADS`, `--threads THREADS`: Number of threads (default: 8).
-*   `-v`, `--verbose`: Enable verbose output.
-*   `-s [SYSTEM_PROMPT]`, `--system-prompt [SYSTEM_PROMPT]`: System prompt.
-*   `--referer REFERER`: Site URL for OpenRouter rankings.
-*   `--title TITLE`: Site title for OpenRouter rankings.
-*   `-f FALLBACKS`, `--fallbacks FALLBACKS`: Allow fallbacks (default: True).
+*   `-t THREADS`, `--threads THREADS`: Number of threads (default from OPENROUTER_THREADS or 8).
+*   `-v`, `--verbose`: Enable verbose output (shows full configuration).
+*   `-s SYSTEM_PROMPT`, `--system-prompt SYSTEM_PROMPT`: System prompt text or file path (.txt/.md).
+*   `--referer REFERER`: Site URL for rankings on openrouter.ai.
+*   `--title TITLE`: Site title for rankings on openrouter.ai.
+*   `-f FALLBACKS`, `--fallbacks FALLBACKS`: Allow fallbacks (default from OPENROUTER_FALLBACKS or true).
 *   `--data-privacy DATA_PRIVACY`: Data collection preference ('allow' or 'deny').
 *   `--require-params`: Only use providers that support all parameters.
 *   `--quantization LEVEL`: Filter providers by quantization level (int4, int8, fp6, fp8, fp16, bf16, fp32).
@@ -90,21 +121,50 @@ The project consists of the following Python scripts:
 
 **Functionality:**
 
-1.  **`get_test_files()`:** Lists CSV files from tests directory sorted by modification time.
-2.  **`select_test_file()`:** Displays last 3 test files and lets user select one.
-3.  **`get_system_prompt(prompt_arg)`:** Reads system prompt from file or uses the provided string.
-4.  **`make_request(row)`:**
-    *   Sends a single quiz to the OpenRouter API.
-    *   Constructs the request payload (model, messages, provider preferences).
-    *   Handles API errors (rate limits, quota exceeded, invalid key, etc.) with retries and exponential backoff.
-    *   Returns the results.
-5.  **Main execution:**
-    *   Parses command-line arguments.
-    *   Lets user select a test file from the 'tests' directory.
-    *   Uses a `ThreadPoolExecutor` to make requests concurrently.
-    *   Writes results to both:
-        - stdout (for piping to compute_metrics.py)
-        - A file in 'results' directory with same name as input file
+1.  **`get_env_defaults()`:**
+    * Reads configuration defaults from environment variables
+    * Handles all supported settings (model, provider, threads, etc.)
+    * Provides fallback values when variables are not set
+
+2.  **`get_test_files()`:**
+    * Lists CSV files from tests directory sorted by modification time
+    * Returns list of (file, modification_time) tuples
+
+3.  **`select_test_file()`:**
+    * Displays last 3 test files and lets user select one
+    * Shows modification times for each file
+    * Validates user input
+
+4.  **`get_system_prompt(prompt_arg)`:**
+    * Supports multiple prompt sources:
+      - Direct text input
+      - File path (.txt or .md)
+      - Environment variables (OPENROUTER_SYSTEM_PROMPT or OPENROUTER_SYSTEM_PROMPT_FILE)
+    * Includes error handling for file reading
+    * Falls back to default prompt if needed
+
+5.  **`make_request(row)`:**
+    * Sends a single quiz to the OpenRouter API
+    * Constructs the request payload (model, messages, provider preferences)
+    * Handles API errors with retries and exponential backoff:
+      - Rate limits
+      - Quota exceeded
+      - Invalid key
+      - Content moderation
+      - Context length
+      - Provider availability
+      - Request timeouts
+    * Returns the results
+
+6.  **Main execution:**
+    * Loads configuration from environment variables
+    * Parses and applies command-line arguments (overriding env vars)
+    * Shows full configuration in verbose mode
+    * Lets user select a test file from the 'tests' directory
+    * Uses ThreadPoolExecutor for concurrent API requests
+    * Writes results to both:
+      - stdout (for piping to compute_metrics.py)
+      - A file in 'results' directory with same name as input file
 
 ### 3. `compute_metrics.py`
 
@@ -124,14 +184,40 @@ The project consists of the following Python scripts:
 
 **Functionality:**
 
-1.  **`extract_answer(row, relaxed)`:** Extracts the model's answer from the response string, handling different answer formats.
-2.  **Main execution:**
-    *   Reads data from stdin (CSV format).
-    *   Extracts the model's answer using `extract_answer`.
-    *   Calculates correctness (correct, incorrect, missing).
-    *   Groups and aggregates the results based on problem size, relation name, and model name.
-    *   Calculates the overall lineage score.
-    *   Outputs the results in either CSV or Markdown format.
+1.  **`get_result_files()`:**
+    * Lists CSV files from results directory and subdirectories
+    * Sorts by modification time
+    * Returns list of (file_path, modification_time) tuples
+
+2.  **`select_result_file()`:**
+    * Shows last 3 modified files for selection
+    * Displays relative paths for better readability
+    * Validates user input
+
+3.  **`extract_answer(row, relaxed)`:**
+    * Extracts the model's answer from the response string
+    * Handles different answer formats
+    * Returns 0 if no valid answer found
+
+4.  **Main execution:**
+    * Lets user select input file from results directory
+    * Creates matching directory structure in data/
+    * Example output structure:
+      ```
+      data/
+      ├── Evaluative Thought-Branching Prompt/
+      │   └── metrics_gemini-2.0-flash-exp_8.csv
+      └── custom/
+          └── metrics_gpt-4_8.csv
+      ```
+    * Processes model responses:
+      - Extracts answers
+      - Calculates correctness
+      - Handles single and multi-size test files
+      - Computes lineage scores
+    * Outputs results:
+      - Saves to data directory with metrics_ prefix
+      - Also prints to stdout for piping
 
 ### 4. `plot_line.py`
 
@@ -186,8 +272,20 @@ The project uses a structured directory system for managing test files and resul
   - Used as input for run_openrouter.py
 
 * **`results/`**: Contains model test results from run_openrouter.py
-  - Files maintain same names as their corresponding test files
-  - Used for analysis and visualization
+   - Organized by prompt name (from system prompt file)
+   - Custom prompts go in 'results/custom/'
+   - Files named as `{model_name}_{size}.csv`
+   - Example structure:
+     ```
+     results/
+     ├── Evaluative Thought-Branching Prompt/  # From prompt file
+     │   ├── gemini-2.0-flash-exp_8.csv
+     │   └── mistral-saba_64.csv
+     └── custom/  # For non-file prompts
+         ├── gpt-4_8.csv
+         └── claude-3_16.csv
+     ```
+   - Model names are cleaned (e.g., "google/gemini-2.0-flash-exp:free" -> "gemini-2.0-flash-exp")
 
 ### Typical Workflow
 
@@ -195,29 +293,32 @@ The project uses a structured directory system for managing test files and resul
    ```bash
    ./lineage_bench.py -l 8
    ```
-   - Creates a timestamped CSV file in tests/
+   - Creates file in tests/ directory: `8_20250221_0401.csv`
    - Contains lineage relationship quizzes
 
 2. **Run Model Tests:**
    ```bash
-   ./run_openrouter.py -m "openai/gpt-4"
+   ./run_openrouter.py -m "google/gemini-2.0-flash-exp:free" -s "prompts/evaluative.md"
    ```
    - Shows last 3 test files for selection
-   - Runs tests using selected file
-   - Saves results to results/ directory
-   - Also outputs to stdout for piping
+   - Creates prompt-specific directory in results/
+   - Saves results as `gemini-2.0-flash-exp_8.csv`
+   - Example: `results/Evaluative Thought-Branching Prompt/gemini-2.0-flash-exp_8.csv`
 
 3. **Analyze Results:**
    ```bash
-   ./run_openrouter.py -m "openai/gpt-4" | ./compute_metrics.py
+   ./compute_metrics.py
    ```
-   - Processes model responses
-   - Calculates accuracy metrics
-   - Can be piped to plotting tools
+   - Shows last 3 result files for selection
+   - Creates matching directory in data/
+   - Saves metrics with prefix: `metrics_gemini-2.0-flash-exp_8.csv`
+   - Example: `data/Evaluative Thought-Branching Prompt/metrics_gemini-2.0-flash-exp_8.csv`
+   - Also outputs to stdout for piping
 
 4. **Visualize Results:**
    ```bash
-   ./compute_metrics.py -c < results/test_file.csv | ./plot_line.py
+   ./compute_metrics.py | ./plot_line.py -o plots/lineage_scores.png
    ```
-   - Creates visualizations from results
+   - Creates visualizations from metrics
    - Can use either line or stacked plots
+   - Saves plots to specified output file
