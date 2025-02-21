@@ -11,3 +11,8 @@ to do: create field specialized prompts to increase and enhance said field outpu
 to do: bring research from https://github.com/atfortes/Awesome-LLM-Reasoning
 to do: bring research from https://github.com/huggingface/open-r1
 to do: bring research from s1: Simple test-time scaling https://arxiv.org/abs/2501.19393
+to do: bring research from LIMO: Less is More for Reasoning https://arxiv.org/abs/2502.03387
+https://github.com/cpldcpu/MisguidedAttention
+https://scale.com/leaderboard/enigma_eval
+
+Scaling up Test-Time Compute with Latent Reasoning: A Recurrent Depth Approach https://arxiv.org/abs/2502.05171

@@ -58,7 +58,8 @@ The project consists of the following Python scripts:
 
 3.  **`if __name__ == '__main__':`:**
     *   Parses command-line arguments.
-    *   Calls `generate_quizzes` and writes the output to a CSV file (stdout).
+    *   Calls `generate_quizzes` and writes the output to a CSV file in the 'tests' directory.
+    *   File name includes timestamp for tracking.
 
 ### 2. `run_openrouter.py`
 
@@ -67,12 +68,12 @@ The project consists of the following Python scripts:
 **Usage:**
 
 ```bash
-./run_openrouter.py -m MODEL [-p PROVIDER] [-e EFFORT] [-t THREADS] [-v] [-s [SYSTEM_PROMPT]] [--referer REFERER] [--title TITLE] [-f FALLBACKS] [--data-privacy DATA_PRIVACY]
+./run_openrouter.py -m MODEL [-p PROVIDER] [-e EFFORT] [-t THREADS] [-v] [-s [SYSTEM_PROMPT]] [--referer REFERER] [--title TITLE] [-f FALLBACKS] [--data-privacy DATA_PRIVACY] [--require-params] [--quantization LEVEL] [--ignore-providers PROVIDERS] [--fallback-models MODELS]
 ```
 
 **Arguments:**
 
-*   `-m MODEL`, `--model MODEL`: OpenRouter model name (required).  Defaults to `openrouter/auto` if not provided.
+*   `-m MODEL`, `--model MODEL`: OpenRouter model name (required). Defaults to `openrouter/auto` if not provided.
 *   `-p PROVIDER`, `--provider PROVIDER`: Comma separated OpenRouter provider name(s).
 *   `-e EFFORT`, `--effort EFFORT`: Reasoning effort (o1 model only).
 *   `-t THREADS`, `--threads THREADS`: Number of threads (default: 8).
@@ -82,20 +83,28 @@ The project consists of the following Python scripts:
 *   `--title TITLE`: Site title for OpenRouter rankings.
 *   `-f FALLBACKS`, `--fallbacks FALLBACKS`: Allow fallbacks (default: True).
 *   `--data-privacy DATA_PRIVACY`: Data collection preference ('allow' or 'deny').
+*   `--require-params`: Only use providers that support all parameters.
+*   `--quantization LEVEL`: Filter providers by quantization level (int4, int8, fp6, fp8, fp16, bf16, fp32).
+*   `--ignore-providers PROVIDERS`: Comma-separated list of providers to ignore.
+*   `--fallback-models MODELS`: Comma-separated list of fallback models to try if primary model fails.
 
 **Functionality:**
 
-1.  **`get_system_prompt(prompt_arg)`:** Reads system prompt from file or uses the provided string.
-2.  **`make_request(row)`:**
+1.  **`get_test_files()`:** Lists CSV files from tests directory sorted by modification time.
+2.  **`select_test_file()`:** Displays last 3 test files and lets user select one.
+3.  **`get_system_prompt(prompt_arg)`:** Reads system prompt from file or uses the provided string.
+4.  **`make_request(row)`:**
     *   Sends a single quiz to the OpenRouter API.
     *   Constructs the request payload (model, messages, provider preferences).
     *   Handles API errors (rate limits, quota exceeded, invalid key, etc.) with retries and exponential backoff.
     *   Returns the results.
-3.  **Main execution:**
+5.  **Main execution:**
     *   Parses command-line arguments.
-    *   Reads quizzes from stdin (CSV format).
+    *   Lets user select a test file from the 'tests' directory.
     *   Uses a `ThreadPoolExecutor` to make requests concurrently.
-    *   Writes the results to stdout (CSV format).
+    *   Writes results to both:
+        - stdout (for piping to compute_metrics.py)
+        - A file in 'results' directory with same name as input file
 
 ### 3. `compute_metrics.py`
 
@@ -165,3 +174,50 @@ The project consists of the following Python scripts:
 2.  Creates a stacked horizontal bar chart, showing the breakdown of scores for different problem sizes for each model.
 3.  Customizes the plot (labels, title, legend, grid).
 4.  Saves the plot to a file (if specified) or displays it.
+
+## Project Structure and Workflow
+
+The project uses a structured directory system for managing test files and results:
+
+### Directories
+
+* **`tests/`**: Contains generated quiz files from lineage_bench.py
+  - Files are named with timestamps for tracking
+  - Used as input for run_openrouter.py
+
+* **`results/`**: Contains model test results from run_openrouter.py
+  - Files maintain same names as their corresponding test files
+  - Used for analysis and visualization
+
+### Typical Workflow
+
+1. **Generate Tests:**
+   ```bash
+   ./lineage_bench.py -l 8
+   ```
+   - Creates a timestamped CSV file in tests/
+   - Contains lineage relationship quizzes
+
+2. **Run Model Tests:**
+   ```bash
+   ./run_openrouter.py -m "openai/gpt-4"
+   ```
+   - Shows last 3 test files for selection
+   - Runs tests using selected file
+   - Saves results to results/ directory
+   - Also outputs to stdout for piping
+
+3. **Analyze Results:**
+   ```bash
+   ./run_openrouter.py -m "openai/gpt-4" | ./compute_metrics.py
+   ```
+   - Processes model responses
+   - Calculates accuracy metrics
+   - Can be piped to plotting tools
+
+4. **Visualize Results:**
+   ```bash
+   ./compute_metrics.py -c < results/test_file.csv | ./plot_line.py
+   ```
+   - Creates visualizations from results
+   - Can use either line or stacked plots

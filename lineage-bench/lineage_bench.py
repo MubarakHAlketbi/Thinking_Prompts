@@ -4,8 +4,12 @@ import codecs
 import random
 import sys
 import csv
+import os
+import requests
+from datetime import datetime
 from enum import Enum
 
+# Default prompt template for the quiz.
 DEFAULT_PROMPT = """Given the following lineage relationships:
 {quiz_relations}
 {quiz_question}
@@ -13,6 +17,7 @@ Select the correct answer:
 {quiz_answers}
 Enclose the selected answer number in the <ANSWER> tag, for example: <ANSWER>1</ANSWER>."""
 
+# List of male names for generating quizzes.
 male_names = [
     'James', 'Robert', 'John', 'Michael', 'David',
     'William', 'Richard', 'Joseph', 'Thomas', 'Christopher',
@@ -36,6 +41,7 @@ male_names = [
     'Bobby', 'Russell', 'Bradley', 'Philip', 'Eugene'
 ]
 
+# List of female names for generating quizzes.
 female_names = [
     'Mary', 'Patricia', 'Jennifer', 'Linda', 'Elizabeth',
     'Barbara', 'Susan', 'Jessica', 'Sarah', 'Karen',
@@ -59,6 +65,7 @@ female_names = [
     'Doris', 'Kayla', 'Alexis', 'Lori', 'Marie'
 ]
 
+# Enumeration for different types of quiz questions.
 class QuizType(Enum):
     ANCESTOR = 1
     DESCENDANT = 2
@@ -66,6 +73,7 @@ class QuizType(Enum):
     COMMON_DESCENDANT = 4
     OTHER = 5
 
+# Templates for the answer options in the quiz.
 answer_templates = [
     (QuizType.ANCESTOR, "{p1_name} is {p2_name}'s ancestor."),
     (QuizType.DESCENDANT, "{p1_name} is {p2_name}'s descendant."),
@@ -75,8 +83,12 @@ answer_templates = [
 ]
 
 def generate_quiz(length, quiz_type, shuffle=False, prompt=DEFAULT_PROMPT):
+    # Generates a single quiz of the specified type and length.
+
+    # Randomly select names for the quiz.
     character_names = random.sample(male_names + female_names, length)
 
+    # Generate the lineage relationships based on the quiz type.
     match quiz_type:
         case QuizType.ANCESTOR:
             ancestor_relations = [(i, i + 1) for i in range(length - 1)]
@@ -91,9 +103,11 @@ def generate_quiz(length, quiz_type, shuffle=False, prompt=DEFAULT_PROMPT):
         case _:
             raise ValueError("Unsupported quiz type")
     
+    # Shuffle the relationships if specified.
     if shuffle:
         random.shuffle(ancestor_relations)
 
+    # Build the string describing the lineage relationships.
     quiz_relations_str = ""
     for p1, p2 in ancestor_relations:
         p1_name = character_names[p1]
@@ -104,11 +118,12 @@ def generate_quiz(length, quiz_type, shuffle=False, prompt=DEFAULT_PROMPT):
         else:
             quiz_relations_str += f"* {p2_name} is {p1_name}'s descendant.\n"
 
+    # Define the quiz question and get the names of the two people in question.
     p1_name = character_names[0]
     p2_name = character_names[length-1]
-
     quiz_question_str = f"Determine the lineage relationship between {p1_name} and {p2_name}."
  
+    # Build the answer options string.
     answer_options = answer_templates[:-1]
     if shuffle:
         random.shuffle(answer_options)
@@ -125,11 +140,12 @@ def generate_quiz(length, quiz_type, shuffle=False, prompt=DEFAULT_PROMPT):
 
     assert(correct_answer_num != 0)
 
+    # Format the complete quiz using the provided prompt template.
     quiz = prompt.format(quiz_relations=quiz_relations_str.strip(), quiz_question=quiz_question_str.strip(), quiz_answers=quiz_answers_str.strip())
-    print(f"generate_quiz returning: {quiz}, {correct_answer_num}")
     return quiz, correct_answer_num
 
 def generate_quizzes(length, num_quizzes=10, prompt=DEFAULT_PROMPT, shuffle=False, seed=None):
+    # Generates multiple quizzes of different types.
     if seed is not None:
         random.seed(seed)
     quiz_types = list(QuizType)
@@ -138,11 +154,28 @@ def generate_quizzes(length, num_quizzes=10, prompt=DEFAULT_PROMPT, shuffle=Fals
     for quiz_type in quiz_types:
         for i in range(num_quizzes):
             quiz, correct_answer = generate_quiz(length, quiz_type, shuffle=shuffle, prompt=prompt)
-            print(f"Yielding: {(str(quiz_type).removeprefix('QuizType.'), correct_answer, quiz)}")
-            yield (str(quiz_type).removeprefix("QuizType."), correct_answer, quiz)
+            if quiz is not None and correct_answer is not None:  # Explicit None check
+                yield (str(quiz_type).removeprefix("QuizType."), correct_answer, quiz)
 
+def get_online_time():
+    """Get current time from an online time server."""
+    try:
+        response = requests.get('http://worldtimeapi.org/api/timezone/UTC')
+        if response.status_code == 200:
+            time_data = response.json()
+            dt = datetime.fromisoformat(time_data['datetime'].replace('Z', '+00:00'))
+            return dt
+        else:
+            print("Warning: Could not get online time, using local time", file=sys.stderr)
+            return datetime.utcnow()
+    except Exception as e:
+        print(f"Warning: Error getting online time ({e}), using local time", file=sys.stderr)
+        return datetime.utcnow()
+
+# Main execution block when the script is run directly.
 if __name__ == '__main__':
     import argparse
+    # Set up the argument parser for command-line options.
     parser = argparse.ArgumentParser()
     parser.add_argument("-l", "--length", help = "Number of people connected with lineage relationships in the quiz.", type=int, required=True)
     parser.add_argument("-p", "--prompt", help = "Prompt template of the quiz. The default prompt template is: " + repr(DEFAULT_PROMPT), default=DEFAULT_PROMPT)
@@ -151,11 +184,24 @@ if __name__ == '__main__':
     parser.add_argument("-r", "--seed", help = "Random seed value", default=None, type=int)
     args = parser.parse_args()
 
+    # Decode the prompt template to handle escaped characters.
     prompt = codecs.escape_decode(bytes(args.prompt, "utf-8"))[0].decode("utf-8")
-csv_writer = csv.writer(sys.stdout)
-try:
-    for relation_name, correct_answer, quiz in generate_quizzes(args.length, args.number, prompt, args.shuffle, args.seed):
-        csv_writer.writerow([args.length, relation_name, correct_answer, quiz])
-except Exception as e:
-    print(f"An error occurred: {e}", file=sys.stderr)
- 
+
+    # Create tests directory if it doesn't exist
+    tests_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tests')
+    os.makedirs(tests_dir, exist_ok=True)
+
+    # Get timestamp from online source
+    current_time = get_online_time()
+    timestamp = current_time.strftime('%Y%m%d_%H%M')
+    output_file = os.path.join(tests_dir, f'lineage_bench_{timestamp}.csv')
+
+    # Create a CSV writer to output the generated quizzes
+    with open(output_file, 'w', newline='') as f:
+        csv_writer = csv.writer(f)
+        try:
+            for relation_name, correct_answer, quiz in generate_quizzes(args.length, args.number, prompt, args.shuffle, args.seed):
+                csv_writer.writerow([args.length, relation_name, correct_answer, quiz])
+            print(f"Output saved to: {output_file}", file=sys.stderr)
+        except Exception as e:
+            print(f"An error occurred: {e}", file=sys.stderr)
